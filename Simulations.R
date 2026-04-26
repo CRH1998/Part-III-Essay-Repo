@@ -37,34 +37,34 @@ library(lava)
 #' @export
 #'
 #' @examples
-sim_SB <- function(n, p,
+sim_SB <- function(n, J = 5,
                    rho = 0.5, mu = 0,
-                   Dp = 0.5,
+                   Ap = 0.5,
                    tau = 0.15, c = 1, sigma_d = sqrt(0.7), tilde_sigma_d = 0.21, lambda = 0.7,
                    V_mu = 0.3, V_tau){
   
   #browser()
-  
   # Calculating derived hyperparameters
-  l <- sqrt((1 - lambda)/(1 - lambda^p) * lambda^(1:p-1))     # Geometric sequence for decaying effect
-  kappa_0 <- l * sqrt(sigma_d^2 - tilde_sigma_d^2)
-  kappa_1 <- l * sqrt(sigma_d^2 - tilde_sigma_d^2)
+  ell <- sqrt((1 - lambda)/(1 - lambda^J) * lambda^(1:J-1))     # Geometric sequence for decaying effect
   
-  beta0 <- l * sqrt(V_mu)
-  beta1 <- l * sqrt(V_tau)
+  kappa0 <- ell * sqrt(max(sigma_d^2 - tilde_sigma_d^2, 0))
+  kappa1 <- ell * sqrt(max(sigma_d^2 - tilde_sigma_d^2, 0))
+  beta0 <- ell * sqrt(V_mu)
+  beta1 <- ell * sqrt(V_tau)
   
   # Simulating covariates
-  Sigma_x <- rbind(cbind(diag(p), rho * diag(p)), cbind(rho * diag(p), diag(p)))
-  mu_x <- rep(0, 2*p)
+  Ij <- diag(J)
+  Sigma_x <- rbind(cbind(Ij, rho * Ij), 
+                   cbind(rho * Ij, Ij))
+  mu_x <- rep(mu, 2*J)
   
-  X <- mvrnorm(n = n, mu = mu_x, Sigma = Sigma_x)
-  X0 <- X[,1:p]
-  X1 <- X[,(p+1):(2*p)]
+  X <- MASS::mvrnorm(n = n, mu = rep(0, 2 * J), Sigma = Sigma_x)
+  X0 <- X[, 1:J, drop = FALSE]
+  X1 <- X[, (J + 1):(2 * J), drop = FALSE]
   
   
   # Simulating treatment
-  Dp <- 0.5
-  D <- rbinom(n, 1, Dp)
+  A <- rbinom(n, 1, Ap)
   
   
   # Simulating errors
@@ -74,18 +74,16 @@ sim_SB <- function(n, p,
   
   
   # Simulating outcome
-  Y0 <- c + X0 %*% beta0 + U0 * c(sqrt(tilde_sigma_d^2 + (X0 %*% kappa_0)^2))
-  Y1 <- (c + tau) + X0 %*% beta0 + X1 %*% beta1 + U1 * c(sqrt(tilde_sigma_d^2 + (X1 %*% kappa_1)^2))
-  Y <- D * Y1 + (1-D) * Y0
+  Y0 <- c + as.numeric(X0 %*% beta0) +
+    U0 * sqrt(tilde_sigma_d^2 + rowSums((X0 %*% diag(kappa0))^2))
   
+  Y1 <- (c + tau) + as.numeric(X0 %*% beta0) + as.numeric(X1 %*% beta1) +
+    U1 * sqrt(tilde_sigma_d^2 + rowSums((X1 %*% diag(kappa1))^2))
+  
+  Y <- A * Y1 + (1 - A) * Y0
   # Return output
-  return(data.frame(Y, D, X0, X1))
+  return(data.frame(Y, A, X))
 }
-
-#test_data <- sim_SB(n = 100000, p = 5, V_tau = 0.5)
-
-
-
 
 
 
@@ -95,11 +93,9 @@ sim_SB <- function(n, p,
 #                 Dukes et al. simulations                 #
 ############################################################
 
-# Generate uniform random variables:
 
-
-sim_dukes <- function(n, heterogeneity = c("None", "QuantHMC", "QuantHNMC", "QualHMC", "QualHNMC"),
-                      noise_mean = 0, noise_sd = 3){
+sim_Dukes <- function(n, heterogeneity = c("None", "QuantHMC", "QuantHNMC"), randomized = FALSE,
+                      noise_mean = 0, noise_sd = 3, heterogeneity_degree = 15, pi_01x = 0.5) {
   
   heterogeneity <- match.arg(heterogeneity)
   
@@ -107,7 +103,11 @@ sim_dukes <- function(n, heterogeneity = c("None", "QuantHMC", "QuantHNMC", "Qua
   X2 <- runif(n = n, min = -1, max = 1)
   X3 <- runif(n = n, min = -1, max = 1)
   
-  pi_01x <- expit(1/8 * X1 + 1/4*sin(pi*X2))
+  if (randomized) {
+    pi_01x <- pi_01x
+  } else {
+    pi_01x <- expit(1/8 * X1 + 1/4*sin(pi*X2))
+  }
   A <- rbinom(n = n, size = 1, prob = pi_01x)
   
   hx <- X1 + expit(1/2*(X2 + X3))
@@ -115,13 +115,9 @@ sim_dukes <- function(n, heterogeneity = c("None", "QuantHMC", "QuantHNMC", "Qua
   if(heterogeneity == "None"){ # No heterogeneity
     gamma <- 3/4
   } else if (heterogeneity == "QuantHMC"){ # Quantitative heterogeneity; monotone CATE
-    gamma <- 15*(X3 - 0.5) * (X3 > 0.5)
+    gamma <- heterogeneity_degree*(X3 - 0.5) * (X3 > 0.5)
   } else if (heterogeneity == "QuantHNMC"){ # Quantitative heterogeneity; non-monotone CATE
     gamma <- 3*(1 - X3^2)
-  } else if (heterogeneity == "QualHMC"){ # Qualitative heterogeneity; monotone CATE
-    gamma <- 3 * sign(X3)*X3^2
-  } else if (heterogeneity == "QualHNMC"){ # Qualitative heterogeneity; non-monotone CATE
-    gamma <- 3 * cos(3 * pi / 2 * X3)
   }
   
   Y <- hx + A * gamma + rnorm(n = n, mean = noise_mean, sd = noise_sd)
